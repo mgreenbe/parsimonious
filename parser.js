@@ -18,13 +18,9 @@ class Parser extends Function {
     return new Parser((input, state) => {
       let resp1 = this(input, state);
       return resp1.outcome === "success"
-        ? p(resp1.value)(input, resp1.newState)
+        ? p(resp1.value)(input, resp1.state)
         : resp1;
     });
-  }
-
-  pair(p) {
-    return this.chain(v => p.map(w => [v, w]));
   }
 
   then(p) {
@@ -42,17 +38,14 @@ class Parser extends Function {
   try() {
     return new Parser((input, state) => {
       let resp1 = this(input, state);
-      return resp1.outcome === "success"
-        ? resp1
-        : { ...resp1, failedState: state };
+      return resp1.outcome === "success" ? resp1 : { ...resp1, state: state };
     });
   }
 
   or(p) {
     return new Parser((input, state) => {
       let resp = this(input, state);
-      return resp.outcome === "success" ||
-        resp.failedState.index !== state.index
+      return resp.outcome === "success" || resp.state.index !== state.index
         ? resp
         : p(input, state);
     });
@@ -73,16 +66,16 @@ class Parser extends Function {
       while (values.length < max) {
         resp = this(input, state);
         if (resp.outcome === "success") {
-          if (resp.newState.index === state.index) {
+          if (resp.state.index === state.index) {
             throw new Error(
               "To guarantee that p.many() terminates, p must consume input."
             );
           }
           values.push(resp.value);
-          state = resp.newState;
+          state = resp.state;
         } else if (
           resp.outcome === "failure" &&
-          resp.failedState.index === state.index
+          resp.state.index === state.index
         ) {
           break;
         } else {
@@ -90,12 +83,13 @@ class Parser extends Function {
         }
       }
       console.log(values);
-      return success(values, resp.failedState || resp.newState);
+      resp = { outcome: "success", value: values, state: resp.state };
+      return resp;
     });
   }
 
   times(min, max = min) {
-    return this.atMost(max).chain(x => (x.length < min ? zero : pure(x)));
+    return this.atMost(max).chain(x => (x.length < min ? fail : pure(x)));
   }
 
   atLeast(min) {
@@ -103,7 +97,7 @@ class Parser extends Function {
   }
 
   many() {
-    return this.times(0, Infinity);
+    return this.atMost(Infinity);
   }
 
   sepBy(p) {
@@ -120,11 +114,17 @@ class Parser extends Function {
   }
 
   failsSoftly() {
-    return this.maybe().chain(x => (x.length === 0 ? pure(null) : zero));
+    return this.maybe().chain(x => {
+      if (x.length === 0) {
+        return pure(null)
+      } else {
+        return fail
+      }
+    })
   }
 
   notFollowedBy(p) {
-    return this.skip(p.failsSoftly());
+    return this.skip(p.failsSoftly())
   }
 
   __call__(input, state) {
@@ -132,10 +132,36 @@ class Parser extends Function {
   }
 }
 
-let getState = new Parser((_input, state) => success(state, state));
+function pure(x) {
+  return new Parser((_input, state) => {
+    let resp = { outcome: "success", value: x, state };
+    return resp;
+  });
+}
 
-let setState = newState =>
-  new Parser((_input, _state) => success(null, newState));
+let fail = new Parser((_input, state) => {
+  let resp = { outcome: "failure", state };
+  return resp;
+});
+
+let getState = new Parser((_input, state) => {
+  let resp = {
+    outcome: "success",
+    value: state,
+    state
+  };
+  return resp;
+});
+
+let setState = state =>
+  new Parser((_input, _state) => {
+    let resp = {
+      outcome: "success",
+      value: null,
+      state
+    };
+    return resp;
+  });
 
 let seq = (...ps) =>
   new Parser((input, state) => {
@@ -145,7 +171,7 @@ let seq = (...ps) =>
       resp = p(input, state);
       if (resp.outcome === "success") {
         values.push(resp.value);
-        state = resp.newState;
+        state = resp.state;
       } else {
         return resp;
       }
@@ -155,71 +181,55 @@ let seq = (...ps) =>
 
 let alt = (...ps) =>
   new Parser((input, state) => {
-    let resp = zero(input, state);
+    let resp = fail(input, state);
     for (let p of ps) {
       resp = p(input, state);
       console.log(resp);
-      if (
-        resp.outcome === "success" ||
-        resp.failedState.index !== state.index
-      ) {
+      if (resp.outcome === "success" || resp.state.index !== state.index) {
         return resp;
       }
     }
     return resp;
   });
 
-function pure(x) {
-  return new Parser((_input, state) => {
-    let resp = success(x, state);
-    return resp;
-  });
-}
-
-let failure = (expected, failedState) => {
-  return {
-    outcome: "failure",
-    expected,
-    failedState
-  };
-};
-
-let zero = new Parser((_input, state) => failure(null, state));
-
-function success(value, newState) {
-  return {
-    outcome: "success",
-    value,
-    newState
-  };
-}
 
 let take = new Parser((input, state) => {
   let x = input[state.index];
-  return x === undefined
-    ? failure("a token", state)
-    : success(x, { ...state, index: state.index + 1 });
+  let resp =
+    x === undefined
+      ? {
+        outcome: "failure",
+        state: { ...state, expected: [...state.expected, expected] }
+      }
+      : {
+        outcome: "success",
+        value: x,
+        state: { ...state, index: state.index + 1, expected: [] }
+      };
+  return resp;
 });
 
 let string = str =>
   new Parser((input, state) => {
-    return input.slice(state.index, state.index + str.length) === str
-      ? success(str, { ...state, index: state.index + str.length })
-      : failure(str, state);
+    let t = input.slice(state.index, state.index + str.length);
+    if (t === str) {
+      let resp = {
+        outcome: "success",
+        value: str,
+        state: { ...state, index: state.index + str.length, expected: [] }
+      };
+      return resp;
+    } else {
+      let resp = {
+        outcome: "failure",
+        state: { ...state, expected: [...state.expected, str] }
+      };
+      return resp;
+    }
   });
 
-let p = take
-  .then(zero)
-  .try()
-  .or(take);
+a = string("a");
+b = string("b");
+c = string("c");
 
-let q = p.pair(zero);
-
-r = take.skip(take).then(take);
-
-s = seq();
-
-t = alt(take.pair(take), zero);
-
-u = string("abc");
-console.log(string("a").sepBy(string("b"))("abababababac", { index: 0 }));
+console.log(a.then(b).failsSoftly()("avac", { index: 0, expected: ["x"] }));
