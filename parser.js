@@ -35,10 +35,19 @@ class Parser extends Function {
     return p.then(this.skip(q));
   }
 
-  try() {
+  try(label) {
     return new Parser((input, state) => {
       let resp1 = this(input, state);
-      return resp1.outcome === "success" ? resp1 : { ...resp1, state: state };
+      if (resp1.outcome === "success") {
+        let resp = resp1;
+        return resp;
+      } else {
+        let state1 = label
+          ? { ...state, expected: [...state.expected, label] }
+          : state;
+        let resp = { ...resp1, state: state1 };
+        return resp;
+      }
     });
   }
 
@@ -116,15 +125,15 @@ class Parser extends Function {
   failsSoftly() {
     return this.maybe().chain(x => {
       if (x.length === 0) {
-        return pure(null)
+        return pure(null);
       } else {
-        return fail
+        return fail;
       }
-    })
+    });
   }
 
   notFollowedBy(p) {
-    return this.skip(p.failsSoftly())
+    return this.skip(p.failsSoftly());
   }
 
   __call__(input, state) {
@@ -192,20 +201,19 @@ let alt = (...ps) =>
     return resp;
   });
 
-
 let take = new Parser((input, state) => {
   let x = input[state.index];
   let resp =
     x === undefined
       ? {
-        outcome: "failure",
-        state: { ...state, expected: [...state.expected, expected] }
-      }
+          outcome: "failure",
+          state: { ...state, expected: [...state.expected, expected] }
+        }
       : {
-        outcome: "success",
-        value: x,
-        state: { ...state, index: state.index + 1, expected: [] }
-      };
+          outcome: "success",
+          value: x,
+          state: { ...state, index: state.index + 1, expected: [] }
+        };
   return resp;
 });
 
@@ -232,4 +240,4 @@ a = string("a");
 b = string("b");
 c = string("c");
 
-console.log(a.then(b).failsSoftly()("avac", { index: 0, expected: ["x"] }));
+console.log(a.try("the letter a")("vac", { index: 0, expected: ["x"] }));
